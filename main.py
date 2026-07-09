@@ -90,7 +90,7 @@ def main():
             h = o + abs(r.randn() * 5)
             l = o - abs(r.randn() * 5)
             c = (h + l) / 2 + r.randn()
-            synthetic.append({'datetime': ts, 'o': o, 'h': h, 'l': l, 'c': c, 'v': r.rand() * 1000})
+            synthetic.append({'datetime': ts, 'open': o, 'high': h, 'low': l, 'close': c, 'volume': r.rand() * 1000})
         df = pd.DataFrame(synthetic).set_index('datetime')
     else:
         df = pd.DataFrame(candles)
