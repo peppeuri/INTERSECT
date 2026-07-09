@@ -70,20 +70,34 @@ def main():
         margin_mode=config.MARGIN_MODE,
     )
 
-    if not bitget.test_connection():
-        log.error('Cannot connect to Bitget. Exiting.')
-        sys.exit(1)
+    connected = bitget.test_connection()
 
-    candles = bitget.get_candles(limit=1000)
+    if connected:
+        candles = bitget.get_candles(limit=1000)
+    else:
+        log.warning('Bitget not connected — using synthetic data. Set API_KEY/API_SECRET env vars.')
+        candles = None
+
     if not candles:
-        log.error('Cannot fetch candles. Exiting.')
-        sys.exit(1)
-
-    df = pd.DataFrame(candles)
-    df = df.rename(columns={'ts': 'datetime', 'o': 'open', 'h': 'high',
-                            'l': 'low', 'c': 'close', 'v': 'volume'})
-    df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-    df = df.set_index('datetime').sort_index()
+        log.info('Generating synthetic market data for dashboard...')
+        import numpy as np
+        dates = pd.date_range(end=pd.Timestamp.now(), periods=1000, freq='15min')
+        base = 3000
+        r = np.random.RandomState(42)
+        synthetic = []
+        for i, ts in enumerate(dates):
+            o = base + r.randn() * 10
+            h = o + abs(r.randn() * 5)
+            l = o - abs(r.randn() * 5)
+            c = (h + l) / 2 + r.randn()
+            synthetic.append({'datetime': ts, 'o': o, 'h': h, 'l': l, 'c': c, 'v': r.rand() * 1000})
+        df = pd.DataFrame(synthetic).set_index('datetime')
+    else:
+        df = pd.DataFrame(candles)
+        df = df.rename(columns={'ts': 'datetime', 'o': 'open', 'h': 'high',
+                                'l': 'low', 'c': 'close', 'v': 'volume'})
+        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+        df = df.set_index('datetime').sort_index()
 
     sample_env = make_env(df[-500:], initial_capital=config.INITIAL_CAPITAL)
     state_dim = sample_env.observation_space.shape[0]
@@ -96,13 +110,17 @@ def main():
     sac = SACAgent(state_dim=state_dim, action_dim=action_dim, hidden_dim=256, device='cpu')
 
     regime_clf = create_regime_classifier(n_states=6, max_states=8)
-    regime_probs = regime_clf.predict_proba(df[-5000:])
 
     ensemble = EnsembleVoting(min_sharpe_threshold=0.2, boost_sharpe_threshold=1.0)
 
     trade_db = create_trade_database(state_dim=state_dim)
 
-    env_factory = create_env_factory(bitget)
+    if connected:
+        env_factory = create_env_factory(bitget)
+    else:
+        def env_factory(df=None):
+            return make_env(df if df is not None else df_local, initial_capital=config.INITIAL_CAPITAL)
+        df_local = df
 
     healing = create_self_healing_daemon(
         ppo_agent=ppo, sac_agent=sac, regime_classifier=regime_clf,
@@ -119,10 +137,14 @@ def main():
         self_healing_daemon=healing, meta_optimizer=meta, trade_db=trade_db,
     )
 
-    loop.start()
-    healing.start()
+    if connected:
+        loop.start()
+        healing.start()
+        log.info('Bot agents started.')
+    else:
+        log.warning('Bot agents not started (no Bitget connection). Dashboard only.')
 
-    log.info('Bot agents started. Launching web dashboard on port 8080...')
+    log.info('Launching web dashboard on port 8080...')
 
     from app import create_app
     app = create_app(loop, trade_db, meta, ppo, sac, regime_clf, config)
