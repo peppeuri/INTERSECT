@@ -1,0 +1,20 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfile": "Dockerfile"
+  },
+  "deploy": {
+    "numReplicas": 1,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10,
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 300
+  },
+  "volumes": {
+    "/app/checkpoints": { "size": 1 },
+    "/app/logs": { "size": 1 },
+    "/app/models": { "size": 1 },
+    "/app/backups": { "size": 1 }
+  }
+}

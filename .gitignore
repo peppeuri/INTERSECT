@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.npy
+*.db
+*.log
+checkpoints/
+models/
+backups/
+.env
+strategy_config.json
+test_local.py
