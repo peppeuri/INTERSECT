@@ -145,7 +145,7 @@ class ContinualLearningLoop:
         pa, pp, pv, _ = self.ppo.predict(obs)
         sa, sp, sv = self.sac.predict(obs)
 
-        action, probs, conf, info = self.ensemble.vote({'ppo': (pa, pp, pv), 'sac': (sa, sp, sv)})
+        action, probs, conf, info = self.ensemble.vote({'ppo': (pa, pp, pv), 'sac': (sa, sp, sv)}, exploration_mode=self.ppo.exploration_mode or getattr(self.sac, 'exploration_mode', False))
 
         if info.get('action') == 'no_trade':
             self._log(f'No trade: {info.get("reason")}')

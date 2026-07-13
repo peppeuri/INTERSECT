@@ -55,6 +55,39 @@ def create_env_factory(bitget_client):
     return factory
 
 
+def _clean_incompatible_checkpoints(current_state_dim: int):
+    import glob
+    import torch
+    count = 0
+    for ckpt in glob.glob('checkpoints/agent_ppo_*.pt'):
+        try:
+            data = torch.load(ckpt, map_location='cpu')
+            arch = data.get('architecture', {})
+            ckpt_state_dim = arch.get('state_dim')
+            if ckpt_state_dim is not None and ckpt_state_dim != current_state_dim:
+                dst = ckpt.replace('checkpoints/', 'backups/incompat_')
+                os.rename(ckpt, dst)
+                log.warning(f'Checkpoint incompatibile spostato: {ckpt} (state_dim={ckpt_state_dim} -> {current_state_dim})')
+                count += 1
+        except Exception:
+            pass
+    if count:
+        log.info(f'Puliti {count} checkpoint incompatibili da checkpoints/')
+
+    for ckpt in glob.glob('checkpoints/agent_sac_*.pt'):
+        try:
+            data = torch.load(ckpt, map_location='cpu')
+            arch = data.get('architecture', {})
+            ckpt_state_dim = arch.get('state_dim')
+            if ckpt_state_dim is not None and ckpt_state_dim != current_state_dim:
+                dst = ckpt.replace('checkpoints/', 'backups/incompat_sac_')
+                os.rename(ckpt, dst)
+                log.warning(f'SAC checkpoint incompatibile spostato: {ckpt} (state_dim={ckpt_state_dim} -> {current_state_dim})')
+                count += 1
+        except Exception:
+            pass
+
+
 def main():
     log.info('═' * 60)
     log.info('  INTERSECT — Autonomous AI Trading System')
@@ -104,6 +137,8 @@ def main():
     action_dim = sample_env.action_space.n
 
     log.info(f'State dim: {state_dim}, Action dim: {action_dim}')
+
+    _clean_incompatible_checkpoints(state_dim)
 
     ppo = PPOAgent(state_dim=state_dim, action_dim=action_dim, lstm_hidden=128,
                    lr=3e-4, entropy_coef=0.01, dropout=0.2, device='cpu')

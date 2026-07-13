@@ -102,12 +102,14 @@ class SelfHealingDaemon:
         if ckpts:
             path = ckpts[-1]
             if name == 'ppo':
-                self.ppo_agent.load_checkpoint(path)
+                self.ppo_agent.load_checkpoint(path, strict=False)
             else:
-                self.sac_agent.load_checkpoint(path)
-            self._log(f'Recovered {name} from {os.path.basename(path)}')
+                self.sac_agent.load_checkpoint(path, strict=False)
+            self._log(f'Recovered {name} from {os.path.basename(path)} (partial load)')
+            self.ppo_agent._activate_exploration_mode()
         else:
-            self._log(f'No checkpoints found for {name}')
+            self._log(f'No checkpoints found for {name} — starting fresh with exploration')
+            self.ppo_agent._activate_exploration_mode()
 
     def _check_performance_degradation(self):
         if len(self.ppo_agent.rolling_sharpe) >= 7:

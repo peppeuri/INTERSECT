@@ -33,7 +33,8 @@ class EnsembleVoting:
             for name in self.agent_sharpes:
                 self.agent_weights[name] = 1.0 / len(self.agent_sharpes)
 
-    def vote(self, agent_predictions: Dict[str, Tuple[int, np.ndarray, float]]) -> Tuple[int, np.ndarray, float, Dict]:
+    def vote(self, agent_predictions: Dict[str, Tuple[int, np.ndarray, float]],
+             exploration_mode: bool = False) -> Tuple[int, np.ndarray, float, Dict]:
         if not agent_predictions:
             return 0, np.ones(7) / 7, 0.0, {'action': 'no_agents', 'size_factor': 1.0}
 
@@ -41,11 +42,12 @@ class EnsembleVoting:
 
         best_sharpe = max(self.agent_sharpes.values()) if self.agent_sharpes else 0
 
-        if best_sharpe < self.min_sharpe_threshold:
+        threshold = self.min_sharpe_threshold * 0.25 if exploration_mode else self.min_sharpe_threshold
+        if best_sharpe < threshold:
             self.no_trade_count += 1
             return 0, np.ones(7) / 7, 0.0, {
                 'action': 'no_trade',
-                'reason': f'Best Sharpe {best_sharpe:.4f} < {self.min_sharpe_threshold}',
+                'reason': f'Best Sharpe {best_sharpe:.4f} < {threshold}',
                 'size_factor': 0.0, 'no_trade_streak': self.no_trade_count
             }
         self.no_trade_count = 0

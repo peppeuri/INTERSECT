@@ -66,19 +66,22 @@ class TradingEnv(gym.Env):
             self.price_changes[i] = (closes[i] - closes[i - 1]) / closes[i - 1]
 
         self.vol_sma = pd.Series(volumes).rolling(20).mean().values
-        self.vol_ratio = np.where(self.vol_sma > 0, volumes / self.vol_sma, 1.0)
+        self.vol_ratio = np.ones_like(volumes)
+        mask = (self.vol_sma > 0) & ~np.isnan(self.vol_sma)
+        self.vol_ratio[mask] = volumes[mask] / self.vol_sma[mask]
 
         self.bb_upper, self.bb_mid, self.bb_lower = self._compute_bb(closes, 20, 2.0)
-        self.bb_position = np.where(
-            (self.bb_upper - self.bb_lower) > 0,
-            (closes - self.bb_lower) / (self.bb_upper - self.bb_lower),
-            0.5
-        )
+        self.bb_position = np.full_like(closes, 0.5)
+        denom = self.bb_upper - self.bb_lower
+        mask = (denom > 0) & ~np.isnan(denom)
+        self.bb_position[mask] = (closes[mask] - self.bb_lower[mask]) / denom[mask]
 
         self.rsi = self._compute_rsi(closes, 14)
         self.adx = self._compute_adx(highs, lows, closes, 14)
         self.atr = self._compute_atr(highs, lows, closes, 14)
-        self.atr_pct = np.where(closes > 0, self.atr / closes, 0)
+        self.atr_pct = np.zeros_like(closes)
+        mask = closes > 0
+        self.atr_pct[mask] = self.atr[mask] / closes[mask]
 
         if self.regime_probs is None:
             self.regime_probs = np.ones((len(closes), self.n_regimes)) / self.n_regimes
@@ -96,9 +99,11 @@ class TradingEnv(gym.Env):
         loss = np.where(delta < 0, -delta, 0)
         avg_gain = pd.Series(gain).rolling(period).mean().values
         avg_loss = pd.Series(loss).rolling(period).mean().values
-        rs = np.where(avg_loss > 0, avg_gain / avg_loss, 100)
+        rs = np.full_like(avg_gain, 100.0)
+        mask = (avg_loss > 0) & ~np.isnan(avg_loss)
+        rs[mask] = avg_gain[mask] / avg_loss[mask]
         rsi = 100 - (100 / (1 + rs))
-        return rsi
+        return np.nan_to_num(rsi, nan=50.0)
 
     def _compute_adx(self, highs, lows, closes, period):
         plus_dm = np.diff(highs, prepend=highs[0])
@@ -114,11 +119,14 @@ class TradingEnv(gym.Env):
         tr[0] = highs[0] - lows[0]
 
         atr = pd.Series(tr).rolling(period).mean().values
-        plus_di = 100 * pd.Series(plus_dm).rolling(period).mean().values / np.where(atr > 0, atr, 1)
-        minus_di = 100 * pd.Series(minus_dm).rolling(period).mean().values / np.where(atr > 0, atr, 1)
-        dx = 100 * np.abs(plus_di - minus_di) / np.where((plus_di + minus_di) > 0, plus_di + minus_di, 1)
+        atr_safe = np.where((atr > 0) & ~np.isnan(atr), atr, 1)
+        plus_di = 100 * pd.Series(plus_dm).rolling(period).mean().values / atr_safe
+        minus_di = 100 * pd.Series(minus_dm).rolling(period).mean().values / atr_safe
+        di_sum = plus_di + minus_di
+        di_sum_safe = np.where((di_sum > 0) & ~np.isnan(di_sum), di_sum, 1)
+        dx = 100 * np.abs(plus_di - minus_di) / di_sum_safe
         adx = pd.Series(dx).rolling(period).mean().values
-        return adx
+        return np.nan_to_num(adx, nan=25.0)
 
     def _compute_atr(self, highs, lows, closes, period):
         tr = np.maximum(

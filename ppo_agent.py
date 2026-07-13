@@ -276,16 +276,30 @@ class PPOAgent:
             'total_steps': self.total_steps,
             'rolling_sharpe': list(self.rolling_sharpe),
             'exploration_mode': self.exploration_mode,
+            'architecture': {
+                'state_dim': self.state_dim,
+                'action_dim': self.action_dim,
+                'lstm_hidden': self.policy_net.lstm.hidden_size,
+                'mlp_hidden': [m.out_features for m in self.policy_net.mlp if isinstance(m, nn.Linear)],
+                'dropout': getattr(self.policy_net.lstm, 'dropout', 0.2),
+            },
         }, path)
         self._log(f'Checkpoint saved: {path}')
 
-    def load_checkpoint(self, path: str):
+    def load_checkpoint(self, path: str, strict: bool = True):
         if not os.path.exists(path):
             self._log(f'Checkpoint not found: {path}')
             return
         try:
             checkpoint = torch.load(path, map_location=self.device)
-            self.policy_net.load_state_dict(checkpoint['policy_net'])
+            if strict:
+                self.policy_net.load_state_dict(checkpoint['policy_net'])
+            else:
+                own_state = self.policy_net.state_dict()
+                for name, param in checkpoint['policy_net'].items():
+                    if name in own_state and param.shape == own_state[name].shape:
+                        own_state[name].copy_(param)
+                self._log(f'Loaded {sum(1 for n in checkpoint["policy_net"] if n in own_state and checkpoint["policy_net"][n].shape == own_state[n].shape)}/{len(checkpoint["policy_net"])} layers from checkpoint')
             self.optimizer.load_state_dict(checkpoint['optimizer'])
             self.lr = checkpoint.get('lr', self.lr)
             self._base_entropy_coef = self.entropy_coef = checkpoint.get('entropy_coef', self.entropy_coef)

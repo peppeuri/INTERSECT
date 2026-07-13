@@ -163,7 +163,8 @@ class MetaOptimizerAgent:
             lstm_hidden=lstm_hidden, lr=lr, entropy_coef=ec,
             gae_lambda=gae, dropout=dropout, device='cpu',
         )
-        agent.policy_net.load_state_dict(self.ppo_agent.policy_net.state_dict())
+        if lstm_hidden == self.ppo_agent.policy_net.lstm.hidden_size:
+            agent.policy_net.load_state_dict(self.ppo_agent.policy_net.state_dict(), strict=False)
         return agent
 
     def _evaluate_agent(self, agent) -> float:
@@ -215,8 +216,15 @@ class MetaOptimizerAgent:
 
     def _promote_paper_agent(self):
         self._log('Promoting paper agent to LIVE')
-        self.ppo_agent.policy_net.load_state_dict(self.current_paper_agent.policy_net.state_dict())
-        self.ppo_agent.optimizer.load_state_dict(self.current_paper_agent.optimizer.state_dict())
+        paper_hidden = self.current_paper_agent.policy_net.lstm.hidden_size
+        live_hidden = self.ppo_agent.policy_net.lstm.hidden_size
+        if paper_hidden == live_hidden:
+            self.ppo_agent.policy_net.load_state_dict(self.current_paper_agent.policy_net.state_dict(), strict=False)
+            self.ppo_agent.optimizer.load_state_dict(self.current_paper_agent.optimizer.state_dict())
+        else:
+            self.ppo_agent.policy_net = self.current_paper_agent.policy_net
+            self.ppo_agent.optimizer = self.current_paper_agent.optimizer
+            self.ppo_agent.state_dim = self.current_paper_agent.state_dim
         self.ppo_agent.lr = self.current_paper_agent.lr
         self.ppo_agent.entropy_coef = self.current_paper_agent.entropy_coef
         self.best_sharpe = self.current_paper_agent.get_metrics()['rolling_sharpe']
