@@ -136,7 +136,7 @@ def main():
     state_dim = sample_env.observation_space.shape[0]
     action_dim = sample_env.action_space.n
 
-    log.info(f'State dim: {state_dim}, Action dim: {action_dim}')
+    log.info(f'State dim: {state_dim}, Action dim: {action_dim}, LSTM hidden: 128')
 
     _clean_incompatible_checkpoints(state_dim)
 

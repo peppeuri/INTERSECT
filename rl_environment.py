@@ -184,8 +184,9 @@ class TradingEnv(gym.Env):
         return np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
 
     def step(self, action):
-        if self.done or self.truncated:
-            return self._get_obs(), 0.0, True, True, {}
+        if self.done or self.truncated or self.current_step >= len(self.df):
+            self.done = True
+            return self._get_obs(), 0.0, True, False, {}
 
         price = self.df['close'].iloc[self.current_step]
         reward = 0.0

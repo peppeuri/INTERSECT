@@ -42,7 +42,6 @@ class MetaOptimizerAgent:
             'lr': (1e-5, 1e-3),
             'entropy_coef': (0.005, 0.05),
             'gae_lambda': (0.9, 0.99),
-            'lstm_hidden': (64, 256),
             'dropout': (0.1, 0.3),
         }
 
@@ -118,20 +117,18 @@ class MetaOptimizerAgent:
 
     def _run_cma_es(self):
         def objective(params):
-            lr, ec, gae, hidden, drop = params
-            agent = self._create_test_agent(lr, ec, gae, int(hidden), drop)
+            lr, ec, gae, drop = params
+            agent = self._create_test_agent(lr, ec, gae, drop)
             return -self._evaluate_agent(agent)
 
         x0 = [
             self.ppo_agent.lr, self.ppo_agent.entropy_coef,
             self.ppo_agent.gae_lambda,
-            self.ppo_agent.policy_net.lstm.hidden_size,
             getattr(self.ppo_agent.policy_net.lstm, 'dropout', 0.2)
         ]
         bounds = [
             self.param_bounds['lr'], self.param_bounds['entropy_coef'],
-            self.param_bounds['gae_lambda'], self.param_bounds['lstm_hidden'],
-            self.param_bounds['dropout']
+            self.param_bounds['gae_lambda'], self.param_bounds['dropout']
         ]
 
         es = CMAEvolutionStrategy(x0, self.cma_sigma, {
@@ -156,15 +153,14 @@ class MetaOptimizerAgent:
         if best_params is not None and best_sharpe > self.best_sharpe * (1 - self.degradation_threshold):
             self._launch_paper_trading(best_params, best_sharpe)
 
-    def _create_test_agent(self, lr, ec, gae, lstm_hidden, dropout):
+    def _create_test_agent(self, lr, ec, gae, dropout):
         from ppo_agent import PPOAgent
         agent = PPOAgent(
             state_dim=self.ppo_agent.state_dim, action_dim=self.ppo_agent.action_dim,
-            lstm_hidden=lstm_hidden, lr=lr, entropy_coef=ec,
+            lstm_hidden=self.ppo_agent.policy_net.lstm.hidden_size, lr=lr, entropy_coef=ec,
             gae_lambda=gae, dropout=dropout, device='cpu',
         )
-        if lstm_hidden == self.ppo_agent.policy_net.lstm.hidden_size:
-            agent.policy_net.load_state_dict(self.ppo_agent.policy_net.state_dict(), strict=False)
+        agent.policy_net.load_state_dict(self.ppo_agent.policy_net.state_dict(), strict=False)
         return agent
 
     def _evaluate_agent(self, agent) -> float:
@@ -184,9 +180,10 @@ class MetaOptimizerAgent:
         return total / 3
 
     def _launch_paper_trading(self, params: np.ndarray, expected_sharpe: float):
-        lr, ec, gae, hidden, drop = params
-        self._log(f'Paper trading: lr={lr:.2e} entropy={ec:.4f} gae={gae:.3f} hidden={int(hidden)} dropout={drop:.3f}')
-        agent = self._create_test_agent(lr, ec, gae, int(hidden), drop)
+        lr, ec, gae, drop = params
+        hidden = self.ppo_agent.policy_net.lstm.hidden_size
+        self._log(f'Paper trading: lr={lr:.2e} entropy={ec:.4f} gae={gae:.3f} dropout={drop:.3f} hidden={hidden}')
+        agent = self._create_test_agent(lr, ec, gae, drop)
         self.current_paper_agent = agent
         self.paper_agent_type = 'ppo'
         self.paper_start_time = time.time()
