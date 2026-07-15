@@ -147,8 +147,12 @@ class ContinualLearningLoop:
 
         action, probs, conf, info = self.ensemble.vote({'ppo': (pa, pp, pv), 'sac': (sa, sp, sv)}, exploration_mode=self.ppo.exploration_mode or getattr(self.sac, 'exploration_mode', False))
 
+        action_label = {0: 'hold', 1: 'buy_1x', 2: 'buy_2x', 3: 'buy_3x', 4: 'sell_1x', 5: 'sell_2x', 6: 'sell_3x'}.get(action, '?')
+        probs_str = ', '.join(f'{p:.2f}' for p in probs)
+        best_sharpe = max(self.ensemble.agent_sharpes.values()) if self.ensemble.agent_sharpes else 0
+        self._log(f'Ensemble: action={action}({action_label}) conf={conf:.2f} best_sharpe={best_sharpe:.4f} probs=[{probs_str}]')
+
         if info.get('action') == 'no_trade':
-            self._log(f'No trade: {info.get("reason")}')
             return
 
         sf = info.get('size_factor', 1.0)
