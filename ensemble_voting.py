@@ -43,7 +43,7 @@ class EnsembleVoting:
         best_sharpe = max(self.agent_sharpes.values()) if self.agent_sharpes else 0
 
         threshold = self.min_sharpe_threshold * 0.25 if exploration_mode else self.min_sharpe_threshold
-        if best_sharpe < threshold:
+        if best_sharpe > 0 and best_sharpe < threshold:
             self.no_trade_count += 1
             return 0, np.ones(7) / 7, 0.0, {
                 'action': 'no_trade',

@@ -63,6 +63,11 @@ class ContinualLearningLoop:
         self.equity = 1000.0
         self.trades_today = 0
         self.last_trade_date = datetime.now().date()
+        self._prev_obs = None
+        self._prev_action = None
+        self._prev_log_prob = 0.0
+        self._prev_value = 0.0
+        self._prev_balance = 1000.0
 
         os.makedirs('logs', exist_ok=True)
 
@@ -142,7 +147,13 @@ class ContinualLearningLoop:
         env.set_regime_probs(rprobs[-min(len(rprobs), 500):])
         obs = env._get_obs()
 
-        pa, pp, pv, _ = self.ppo.predict(obs)
+        current_balance = self.client.get_balance()
+
+        if self._prev_obs is not None:
+            reward = (current_balance - self._prev_balance) / self._prev_balance if self._prev_balance > 0 else 0.0
+            self.ppo.store_transition(self._prev_obs, self._prev_action, reward, obs, False, self._prev_log_prob, self._prev_value)
+
+        pa, pp, pv, plogp = self.ppo.predict(obs)
         sa, sp, sv = self.sac.predict(obs)
 
         action, probs, conf, info = self.ensemble.vote({'ppo': (pa, pp, pv), 'sac': (sa, sp, sv)}, exploration_mode=self.ppo.exploration_mode or getattr(self.sac, 'exploration_mode', False))
@@ -152,16 +163,18 @@ class ContinualLearningLoop:
         best_sharpe = max(self.ensemble.agent_sharpes.values()) if self.ensemble.agent_sharpes else 0
         self._log(f'Ensemble: action={action}({action_label}) conf={conf:.2f} best_sharpe={best_sharpe:.4f} probs=[{probs_str}]')
 
-        if info.get('action') == 'no_trade':
-            return
-
         sf = info.get('size_factor', 1.0)
-        if action not in (0, None):
+        if action not in (0, None) and info.get('action') != 'no_trade':
             self._execute(action, price, sf, df, regime, info)
 
-        self.ppo.update_rolling_metrics(env.equity)
-        self.sac.update_rolling_metrics(env.equity)
-        self.equity = env.equity
+        self.ppo.update_rolling_metrics(current_balance)
+        self.sac.update_rolling_metrics(current_balance)
+        self.equity = current_balance
+        self._prev_obs = obs.copy()
+        self._prev_action = pa
+        self._prev_log_prob = plogp
+        self._prev_value = pv
+        self._prev_balance = current_balance
 
     def _execute(self, action, price, sf, df, regime, info):
         side_map = {

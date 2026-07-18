@@ -42,6 +42,7 @@ class SelfHealingDaemon:
         self.last_equity = 1000.0
         self.last_equity_time = time.time()
         self.last_cache_warm = 0
+        self.startup_time = time.time()
         self.feature_history = deque(maxlen=1000)
         self.backtest_performance = deque(maxlen=100)
         self.live_performance = deque(maxlen=100)
@@ -88,6 +89,9 @@ class SelfHealingDaemon:
 
     def _check_agent_health(self):
         try:
+            grace = max(self.check_interval * 3, 1800)
+            if time.time() - self.startup_time < grace:
+                return
             ppo = self.ppo_agent.get_metrics()
             if ppo.get('total_steps', 0) == 0:
                 self._log('PPO appears dead, recovering')
