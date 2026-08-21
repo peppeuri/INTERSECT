@@ -50,7 +50,9 @@ class Config:
         self.PASSPHRASE = os.environ.get('PASSPHRASE', '')
         self.BASE_URL = os.environ.get('BASE_URL', 'https://api.bitget.com')
         self.DEMO = os.environ.get('DEMO', 'true').lower() == 'true'
-        self.SYMBOL = os.environ.get('SYMBOL', 'ETHUSDT')
+        raw_symbols = os.environ.get('SYMBOLS', os.environ.get('SYMBOL', 'ETHUSDT'))
+        self.SYMBOLS = [s.strip() for s in raw_symbols.split(',') if s.strip()]
+        self.SYMBOL = self.SYMBOLS[0]
         self.PRODUCT_TYPE = os.environ.get('PRODUCT_TYPE', 'USDT-FUTURES')
         self.MARGIN_COIN = os.environ.get('MARGIN_COIN', 'USDT')
         self.MARGIN_MODE = os.environ.get('MARGIN_MODE', 'crossed')

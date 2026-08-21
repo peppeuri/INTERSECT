@@ -17,6 +17,7 @@ class SelfHealingDaemon:
         sac_agent,
         regime_classifier,
         env_factory,
+        symbol: str = 'ETHUSDT',
         check_interval: int = 300,
         exploration_sharpe_threshold: float = -0.5,
         stuck_equity_hours: int = 72,
@@ -29,6 +30,7 @@ class SelfHealingDaemon:
         self.sac_agent = sac_agent
         self.regime_classifier = regime_classifier
         self.env_factory = env_factory
+        self.symbol = symbol
         self.check_interval = check_interval
         self.exploration_sharpe_threshold = exploration_sharpe_threshold
         self.stuck_equity_hours = stuck_equity_hours
@@ -102,7 +104,10 @@ class SelfHealingDaemon:
 
     def _recover_agent(self, name: str):
         import glob
-        ckpts = sorted(glob.glob(f'checkpoints/agent_{name}_*.pt'), key=os.path.getmtime)
+        sym = self.symbol.lower()
+        ckpts = sorted(glob.glob(f'checkpoints/{sym}/agent_{name}_*.pt'), key=os.path.getmtime)
+        if not ckpts:
+            ckpts = sorted(glob.glob(f'checkpoints/agent_{name}_{sym}_*.pt'), key=os.path.getmtime)
         if ckpts:
             path = ckpts[-1]
             if name == 'ppo':
@@ -171,9 +176,9 @@ class SelfHealingDaemon:
 
     def _log(self, msg: str):
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-        log_entry = f'{timestamp} | HEALING | {msg}\n'
+        log_entry = f'{timestamp} | {self.symbol} | HEALING | {msg}\n'
         print(log_entry.strip())
-        with open('logs/self_healing.log', 'a') as f:
+        with open(f'logs/{self.symbol.lower()}_self_healing.log', 'a') as f:
             f.write(log_entry)
 
 

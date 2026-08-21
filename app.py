@@ -1,6 +1,6 @@
 """
 INTERSECT — Autonomous AI Trading System
-app.py: FastAPI web dashboard + REST API + healthcheck
+app.py: FastAPI web dashboard + REST API + healthcheck (multi-symbol)
 """
 
 from fastapi import FastAPI, HTTPException, Body
@@ -10,8 +10,8 @@ import time
 from datetime import datetime
 
 
-def create_app(loop, trade_db, meta_optimizer, ppo_agent, sac_agent, regime_clf, config):
-    app = FastAPI(title='INTERSECT', version='1.0.0')
+def create_app(stacks, config):
+    app = FastAPI(title='INTERSECT', version='2.0.0')
 
     @app.get('/health')
     def health():
@@ -19,15 +19,101 @@ def create_app(loop, trade_db, meta_optimizer, ppo_agent, sac_agent, regime_clf,
             'status': 'ok',
             'timestamp': datetime.now().isoformat(),
             'demo': config.DEMO,
-            'symbol': config.SYMBOL,
+            'symbols': list(stacks.keys()),
         }
 
     @app.get('/')
     def dashboard():
-        status = loop.get_status()
-        metrics = trade_db.get_rolling_metrics(50)
-        df = _get_recent_df(loop.client, 500)
-        regime, _ = regime_clf.get_current_regime(df) if df is not None else (0, None)
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        badge = "live" if not config.DEMO else "demo"
+        badge_text = "LIVE" if not config.DEMO else "DEMO"
+
+        symbols_html = ''
+        for sym, s in stacks.items():
+            status = s['loop'].get_status()
+            metrics = s['trade_db'].get_rolling_metrics(50)
+            pos = s['bitget'].get_position()
+
+            sym_label = f"{sym[:3]}-{sym[3:]}" if len(sym) > 3 else sym
+            pos_html = ''
+            if pos:
+                side = pos.get('holdSide', '?').upper()
+                size = pos.get('total', '?')
+                entry = pos.get('openPriceAvg', '?')
+                upl = float(pos.get('unrealizedPL', 0))
+                upl_cls = 'green' if upl > 0 else 'red'
+                pos_html = f'''
+                    <div class="card">
+                        <h3>Position</h3>
+                        <div class="value">{side} {size} @ ${float(entry):,.2f}</div>
+                        <div class="sub {upl_cls}">uPnL: ${upl:+.2f}</div>
+                    </div>'''
+            else:
+                pos_html = '<div class="card"><h3>Position</h3><div class="value" style="color:#666">None</div></div>'
+
+            trades_html = ''
+            trades = s['trade_db'].get_recent_trades(10)
+            for t in trades:
+                pnl = t.get('pnl', 0) or 0
+                pnl_cls = 'green' if pnl > 0 else ('red' if pnl < 0 else '')
+                trades_html += f'''
+                    <tr>
+                        <td>{t.get("timestamp", "")[:19]}</td>
+                        <td>{t.get("side", "").upper()}</td>
+                        <td>{t.get("size", 0):.4f}</td>
+                        <td>${t.get("price", 0):,.2f}</td>
+                        <td>{t.get("leverage", 1)}x</td>
+                        <td class="{pnl_cls}">${pnl:+.2f}</td>
+                    </tr>'''
+
+            ppo_sharpe = status.get('ppo_sharpe', 0)
+            ppo_cls = 'green' if ppo_sharpe > 0.5 else ('yellow' if ppo_sharpe > 0 else 'red')
+
+            symbols_html += f'''
+                <h2 style="color:#00ffaa; margin-top:30px;">{sym_label}</h2>
+                <div class="grid">
+                    <div class="card">
+                        <h3>PPO Sharpe</h3>
+                        <div class="value {ppo_cls}">{ppo_sharpe:.4f}</div>
+                        <div class="sub">SAC: {status.get("sac_sharpe", 0):.4f}</div>
+                    </div>
+                    <div class="card">
+                        <h3>Best Sharpe (Meta)</h3>
+                        <div class="value green">{status.get("best_sharpe", 0):.4f}</div>
+                    </div>
+                    <div class="card">
+                        <h3>Total Steps</h3>
+                        <div class="value">{status.get("total_steps", 0):,}</div>
+                        <div class="sub">Buffer: {status.get("buffer_size", 0):,}</div>
+                    </div>
+                    <div class="card">
+                        <h3>Exploration</h3>
+                        <div class="value {"yellow" if status.get("exploration") else "green"}">
+                            {"ACTIVE" if status.get("exploration") else "OFF"}
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3>Trades Today</h3>
+                        <div class="value">{status.get("trades_today", 0)}</div>
+                    </div>
+                    {pos_html}
+                </div>
+
+                <h3>Rolling Metrics (last 50 trades)</h3>
+                <div class="grid">
+                    <div class="card"><h3>Win Rate</h3><div class="value">{metrics.get("win_rate", 0):.1f}%</div></div>
+                    <div class="card"><h3>Profit Factor</h3><div class="value">{metrics.get("profit_factor", 0):.2f}</div></div>
+                    <div class="card"><h3>Max Drawdown</h3><div class="value red">{metrics.get("max_drawdown", 0):.2f}%</div></div>
+                    <div class="card"><h3>Total Return</h3>
+                        <div class="value {"green" if metrics.get("total_return", 0) > 0 else "red"}">${metrics.get("total_return", 0):+.2f}</div>
+                    </div>
+                </div>
+
+                <h3>Recent Trades</h3>
+                <table>
+                    <tr><th>Time</th><th>Side</th><th>Size</th><th>Price</th><th>Lev</th><th>PnL</th></tr>
+                    {trades_html}
+                </table>'''
 
         html = f'''
         <!DOCTYPE html>
@@ -37,15 +123,15 @@ def create_app(loop, trade_db, meta_optimizer, ppo_agent, sac_agent, regime_clf,
             <meta http-equiv="refresh" content="60">
             <style>
                 body {{ font-family: 'Courier New', monospace; background: #0a0a0a; color: #00ffaa; margin: 0; padding: 20px; }}
-                .container {{ max-width: 1200px; margin: 0 auto; }}
+                .container {{ max-width: 1400px; margin: 0 auto; }}
                 h1 {{ color: #00ffaa; border-bottom: 1px solid #00ffaa; padding-bottom: 10px; }}
-                .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin: 20px 0; }}
+                .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin: 15px 0; }}
                 .card {{ background: #111; border: 1px solid #00ffaa33; border-radius: 8px; padding: 15px; }}
                 .card h3 {{ margin: 0 0 10px 0; color: #888; font-size: 12px; text-transform: uppercase; }}
-                .card .value {{ font-size: 24px; font-weight: bold; }}
+                .card .value {{ font-size: 22px; font-weight: bold; }}
                 .card .sub {{ font-size: 12px; color: #666; margin-top: 5px; }}
                 .green {{ color: #00ffaa; }} .red {{ color: #ff4444; }} .yellow {{ color: #ffaa00; }}
-                table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+                table {{ width: 100%; border-collapse: collapse; margin: 15px 0; }}
                 th, td {{ border: 1px solid #00ffaa33; padding: 8px 12px; text-align: left; }}
                 th {{ background: #111; color: #888; text-transform: uppercase; font-size: 11px; }}
                 .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; }}
@@ -55,90 +141,10 @@ def create_app(loop, trade_db, meta_optimizer, ppo_agent, sac_agent, regime_clf,
         </head>
         <body>
             <div class="container">
-                <h1>🔷 INTERSECT <span class="badge {"live" if not config.DEMO else "demo"}">{"LIVE" if not config.DEMO else "DEMO"}</span></h1>
-                <p>ETH-USDT | {config.TIMEFRAME} | {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
-
-                <div class="grid">
-                    <div class="card">
-                        <h3>PPO Sharpe</h3>
-                        <div class="value { "green" if status.get("ppo_sharpe", 0) > 0.5 else ("yellow" if status.get("ppo_sharpe", 0) > 0 else "red") }">
-                            {status.get("ppo_sharpe", 0):.4f}
-                        </div>
-                        <div class="sub">SAC: {status.get("sac_sharpe", 0):.4f}</div>
-                    </div>
-                    <div class="card">
-                        <h3>Best Sharpe (Meta)</h3>
-                        <div class="value green">{status.get("best_sharpe", 0):.4f}</div>
-                        <div class="sub">All-time best agent</div>
-                    </div>
-                    <div class="card">
-                        <h3>Total Steps</h3>
-                        <div class="value">{status.get("total_steps", 0):,}</div>
-                        <div class="sub">Buffer: {status.get("buffer_size", 0):,}</div>
-                    </div>
-                    <div class="card">
-                        <h3>Regime States</h3>
-                        <div class="value">{status.get("n_regimes", 0)}</div>
-                        <div class="sub">HMM states</div>
-                    </div>
-                    <div class="card">
-                        <h3>Exploration Mode</h3>
-                        <div class="value {"yellow" if status.get("exploration", False) else "green"}">
-                            {"ACTIVE" if status.get("exploration", False) else "OFF"}
-                        </div>
-                    </div>
-                    <div class="card">
-                        <h3>Trades Today</h3>
-                        <div class="value">{status.get("trades_today", 0)}</div>
-                        <div class="sub">Equity: ${status.get("equity", 0):.2f}</div>
-                    </div>
-                </div>
-
-                <h2>Rolling Metrics (last 50 trades)</h2>
-                <div class="grid">
-                    <div class="card">
-                        <h3>Win Rate</h3>
-                        <div class="value">{metrics.get("win_rate", 0):.1f}%</div>
-                    </div>
-                    <div class="card">
-                        <h3>Profit Factor</h3>
-                        <div class="value">{metrics.get("profit_factor", 0):.2f}</div>
-                    </div>
-                    <div class="card">
-                        <h3>Max Drawdown</h3>
-                        <div class="value red">{metrics.get("max_drawdown", 0):.2f}%</div>
-                    </div>
-                    <div class="card">
-                        <h3>Total Return</h3>
-                        <div class="value {"green" if metrics.get("total_return", 0) > 0 else "red"}">
-                            ${metrics.get("total_return", 0):.2f}
-                        </div>
-                    </div>
-                </div>
-
-                <h2>Recent Trades</h2>
-                <table>
-                    <tr>
-                        <th>Time</th><th>Side</th><th>Size</th><th>Price</th><th>Lev</th><th>PnL</th>
-                    </tr>
-        '''
-        trades = trade_db.get_recent_trades(20)
-        for t in trades:
-            pnl = t.get('pnl', 0) or 0
-            color = 'green' if pnl > 0 else ('red' if pnl < 0 else '')
-            html += f'''
-                    <tr>
-                        <td>{t.get("timestamp", "")[:19]}</td>
-                        <td>{t.get("side", "").upper()}</td>
-                        <td>{t.get("size", 0):.4f}</td>
-                        <td>${t.get("price", 0):.2f}</td>
-                        <td>{t.get("leverage", 1)}x</td>
-                        <td class="{color}">${pnl:.2f}</td>
-                    </tr>'''
-
-        html += '''
-                </table>
-                <p style="color:#444; font-size:11px;">INTERSECT v1.0 — Autonomous AI Trading System</p>
+                <h1>INTERSECT <span class="badge {badge}">{badge_text}</span></h1>
+                <p>{", ".join(stacks.keys())} | {config.TIMEFRAME} | {now_str}</p>
+                {symbols_html}
+                <p style="color:#444; font-size:11px; margin-top:40px;">INTERSECT v2.0 — Multi-Asset AI Trading System</p>
             </div>
         </body>
         </html>'''
@@ -146,13 +152,19 @@ def create_app(loop, trade_db, meta_optimizer, ppo_agent, sac_agent, regime_clf,
 
     @app.get('/api/metrics')
     def api_metrics():
-        status = loop.get_status()
-        metrics = trade_db.get_rolling_metrics(50)
-        return {**status, **{'rolling': metrics}}
+        result = {}
+        for sym, s in stacks.items():
+            status = s['loop'].get_status()
+            metrics = s['trade_db'].get_rolling_metrics(50)
+            result[sym] = {**status, 'rolling': metrics}
+        return result
 
-    @app.get('/api/trades')
-    def api_trades(n: int = 50):
-        return trade_db.get_recent_trades(n)
+    @app.get('/api/trades/{symbol}')
+    def api_trades(symbol: str, n: int = 50):
+        s = stacks.get(symbol.upper())
+        if not s:
+            raise HTTPException(404, f'Unknown symbol: {symbol}')
+        return s['trade_db'].get_recent_trades(n)
 
     @app.get('/api/config')
     def api_config():
@@ -165,11 +177,14 @@ def create_app(loop, trade_db, meta_optimizer, ppo_agent, sac_agent, regime_clf,
         config.save_strategy_config(current)
         return {'status': 'ok', 'config': current}
 
-    @app.get('/api/agent-evolution')
-    def api_evolution():
+    @app.get('/api/agent-evolution/{symbol}')
+    def api_evolution(symbol: str):
         import sqlite3
         import os
-        path = getattr(meta_optimizer, 'db_path', 'agent_evolution.db')
+        s = stacks.get(symbol.upper())
+        if not s:
+            raise HTTPException(404, f'Unknown symbol: {symbol}')
+        path = s['meta'].db_path
         if not os.path.exists(path):
             return []
         conn = sqlite3.connect(path)
@@ -188,15 +203,3 @@ def create_app(loop, trade_db, meta_optimizer, ppo_agent, sac_agent, regime_clf,
         return {'status': 'shutting_down'}
 
     return app
-
-
-def _get_recent_df(client, limit=500):
-    import pandas as pd
-    candles = client.get_candles(limit=limit)
-    if not candles:
-        return None
-    df = pd.DataFrame(candles)
-    df = df.rename(columns={'ts': 'datetime', 'o': 'open', 'h': 'high',
-                            'l': 'low', 'c': 'close', 'v': 'volume'})
-    df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-    return df.set_index('datetime').sort_index()

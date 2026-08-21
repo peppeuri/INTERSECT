@@ -25,6 +25,7 @@ class ContinualLearningLoop:
         self_healing_daemon,
         meta_optimizer,
         trade_db,
+        symbol: str = 'ETHUSDT',
         loop_interval: int = 900,
         online_update_interval: int = 1,
         batch_retrain_interval: int = 86400,
@@ -42,6 +43,7 @@ class ContinualLearningLoop:
         self.healing = self_healing_daemon
         self.meta = meta_optimizer
         self.db = trade_db
+        self.symbol = symbol
 
         self.loop_interval = loop_interval
         self.online_update_interval = online_update_interval
@@ -100,8 +102,8 @@ class ContinualLearningLoop:
                     if len(self.ppo.replay_buffer) >= self.ppo.batch_size:
                         self.ppo.train_batch()
                         self.sac.train()
-                        self.ppo.save_checkpoint(f'checkpoints/agent_ppo_{int(now)}.pt')
-                        self.sac.save_checkpoint(f'checkpoints/agent_sac_{int(now)}.pt')
+                        self.ppo.save_checkpoint(f'checkpoints/{self.symbol.lower()}/agent_ppo_{int(now)}.pt')
+                        self.sac.save_checkpoint(f'checkpoints/{self.symbol.lower()}/agent_sac_{int(now)}.pt')
                         self._log('Batch retrain complete')
                     self.last_batch = now
 
@@ -227,7 +229,7 @@ class ContinualLearningLoop:
 
         if resp.get('code') == '00000':
             oid = resp['data'].get('orderId')
-            self._log(f'Trade: {side} {size} ETH @ {price:.2f} (lev={lev}x) order={oid}')
+            self._log(f'Trade: {side} {size} {self.symbol} @ {price:.2f} (lev={lev}x) order={oid}')
             ok = self.client.place_sl_tp('long' if side == 'buy' else 'short', sl, tp)
             if not ok:
                 self._log('SL/TP failed, closing')
@@ -263,11 +265,12 @@ class ContinualLearningLoop:
                 if truncated:
                     break
         self.ppo.train_batch()
-        self.ppo.save_checkpoint(f'checkpoints/agent_ppo_full_{int(time.time())}.pt')
+        self.ppo.save_checkpoint(f'checkpoints/{self.symbol.lower()}/agent_ppo_full_{int(time.time())}.pt')
         self._log('Full retrain complete')
 
     def _archive(self):
-        for pattern in ('checkpoints/agent_ppo_*.pt', 'checkpoints/agent_sac_*.pt'):
+        sym = self.symbol.lower()
+        for pattern in (f'checkpoints/{sym}/agent_ppo_*.pt', f'checkpoints/{sym}/agent_sac_*.pt'):
             ckpts = sorted(glob.glob(pattern), key=os.path.getmtime)
             if len(ckpts) > 20:
                 for old in ckpts[:-20]:
@@ -311,9 +314,10 @@ class ContinualLearningLoop:
 
     def _log(self, msg: str):
         ts = time.strftime('%Y-%m-%d %H:%M:%S')
-        entry = f'{ts} | LOOP | {msg}\n'
+        entry = f'{ts} | {self.symbol} | {msg}\n'
         print(entry.strip())
-        with open('logs/continual_learning.log', 'a') as f:
+        sym_lower = self.symbol.lower()
+        with open(f'logs/{sym_lower}_continual_learning.log', 'a') as f:
             f.write(entry)
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 INTERSECT — Autonomous AI Trading System
-main.py: Entry point — starts trading bot threads + FastAPI web server
+main.py: Entry point — starts per-symbol trading bot threads + FastAPI web server
 """
 
 import os
@@ -38,6 +38,13 @@ for d in ['logs', 'checkpoints', 'models', 'backups']:
     os.makedirs(d, exist_ok=True)
 
 
+def _candles_to_df(candles):
+    df = pd.DataFrame(candles)
+    df = df.rename(columns={'ts': 'datetime', 'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
+    df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+    return df.set_index('datetime').sort_index()
+
+
 def create_env_factory(bitget_client):
     def factory(df=None):
         if df is None:
@@ -47,99 +54,84 @@ def create_env_factory(bitget_client):
                 df = pd.DataFrame({'open': [3000], 'high': [3010], 'low': [2990],
                                    'close': [3005], 'volume': [100]})
             else:
-                df = pd.DataFrame(candles)
-                df = df.rename(columns={'ts': 'datetime', 'o': 'open', 'h': 'high',
-                                        'l': 'low', 'c': 'close', 'v': 'volume'})
-                df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-                df = df.set_index('datetime').sort_index()
+                df = _candles_to_df(candles)
         return make_env(df, initial_capital=config.INITIAL_CAPITAL)
     return factory
 
 
-def _clean_incompatible_checkpoints(current_state_dim: int):
-    import glob
+def _clean_incompatible_checkpoints(current_state_dim: int, symbol_lower: str):
     import torch
     count = 0
-    for ckpt in glob.glob('checkpoints/agent_ppo_*.pt'):
-        try:
-            data = torch.load(ckpt, map_location='cpu', weights_only=False)
-            arch = data.get('architecture', {})
-            ckpt_state_dim = arch.get('state_dim')
-            if ckpt_state_dim is not None and ckpt_state_dim != current_state_dim:
-                dst = ckpt.replace('checkpoints/', 'backups/incompat_')
-                os.rename(ckpt, dst)
-                log.warning(f'Checkpoint incompatibile spostato: {ckpt} (state_dim={ckpt_state_dim} -> {current_state_dim})')
-                count += 1
-        except Exception:
-            pass
+    for pattern in (f'checkpoints/{symbol_lower}/agent_ppo_*.pt', f'checkpoints/agent_ppo_{symbol_lower}_*.pt'):
+        for ckpt in glob.glob(pattern):
+            try:
+                data = torch.load(ckpt, map_location='cpu', weights_only=False)
+                arch = data.get('architecture', {})
+                ckpt_state_dim = arch.get('state_dim')
+                if ckpt_state_dim is not None and ckpt_state_dim != current_state_dim:
+                    dst = ckpt.replace('checkpoints/', 'backups/incompat_')
+                    os.rename(ckpt, dst)
+                    log.warning(f'Incompatible checkpoint moved: {ckpt}')
+                    count += 1
+            except Exception:
+                pass
+    for pattern in (f'checkpoints/{symbol_lower}/agent_sac_*.pt', f'checkpoints/agent_sac_{symbol_lower}_*.pt'):
+        for ckpt in glob.glob(pattern):
+            try:
+                data = torch.load(ckpt, map_location='cpu', weights_only=False)
+                arch = data.get('architecture', {})
+                ckpt_state_dim = arch.get('state_dim')
+                if ckpt_state_dim is not None and ckpt_state_dim != current_state_dim:
+                    dst = ckpt.replace('checkpoints/', 'backups/incompat_sac_')
+                    os.rename(ckpt, dst)
+                    log.warning(f'Incompatible SAC checkpoint moved: {ckpt}')
+                    count += 1
+            except Exception:
+                pass
     if count:
-        log.info(f'Puliti {count} checkpoint incompatibili da checkpoints/')
-
-    for ckpt in glob.glob('checkpoints/agent_sac_*.pt'):
-        try:
-            data = torch.load(ckpt, map_location='cpu', weights_only=False)
-            arch = data.get('architecture', {})
-            ckpt_state_dim = arch.get('state_dim')
-            if ckpt_state_dim is not None and ckpt_state_dim != current_state_dim:
-                dst = ckpt.replace('checkpoints/', 'backups/incompat_sac_')
-                os.rename(ckpt, dst)
-                log.warning(f'SAC checkpoint incompatibile spostato: {ckpt} (state_dim={ckpt_state_dim} -> {current_state_dim})')
-                count += 1
-        except Exception:
-            pass
+        log.info(f'Cleaned {count} incompatible checkpoints')
 
 
-def main():
-    log.info('═' * 60)
-    log.info('  INTERSECT — Autonomous AI Trading System')
-    log.info(f'  ETH-USDT | Bitget USDT-Futures | {config.TIMEFRAME}')
-    log.info(f'  Demo: {config.DEMO} | Initial Capital: ${config.INITIAL_CAPITAL}')
-    log.info('═' * 60)
+def _create_symbol_stack(symbol, connected, shared_df=None):
+    sym_lower = symbol.lower()
+    log.info(f'Creating stack for {symbol}...')
 
     bitget = create_bitget_client(
         api_key=config.API_KEY, api_secret=config.API_SECRET,
         passphrase=config.PASSPHRASE, base_url=config.BASE_URL,
-        demo=config.DEMO, symbol=config.SYMBOL,
+        demo=config.DEMO, symbol=symbol,
         product_type=config.PRODUCT_TYPE, margin_coin=config.MARGIN_COIN,
         margin_mode=config.MARGIN_MODE,
     )
 
-    connected = bitget.test_connection()
-
     if connected:
         candles = bitget.get_candles(limit=1000)
+        df = _candles_to_df(candles) if candles else shared_df
     else:
-        log.warning('Bitget not connected — using synthetic data. Set API_KEY/API_SECRET env vars.')
-        candles = None
+        df = shared_df
 
-    if not candles:
-        log.info('Generating synthetic market data for dashboard...')
+    if df is None:
+        log.warning(f'{symbol}: no data available, using synthetic')
         import numpy as np
         dates = pd.date_range(end=pd.Timestamp.now(), periods=1000, freq='15min')
-        base = 3000
-        r = np.random.RandomState(42)
+        r = np.random.RandomState(42 if sym_lower == 'ethusdt' else 43)
+        base = 3000 if 'ETH' in symbol else 150
         synthetic = []
-        for i, ts in enumerate(dates):
-            o = base + r.randn() * 10
-            h = o + abs(r.randn() * 5)
-            l = o - abs(r.randn() * 5)
+        for ts in dates:
+            o = base + r.randn() * (base * 0.005)
+            h = o + abs(r.randn() * (base * 0.003))
+            l = o - abs(r.randn() * (base * 0.003))
             c = (h + l) / 2 + r.randn()
             synthetic.append({'datetime': ts, 'open': o, 'high': h, 'low': l, 'close': c, 'volume': r.rand() * 1000})
         df = pd.DataFrame(synthetic).set_index('datetime')
-    else:
-        df = pd.DataFrame(candles)
-        df = df.rename(columns={'ts': 'datetime', 'o': 'open', 'h': 'high',
-                                'l': 'low', 'c': 'close', 'v': 'volume'})
-        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-        df = df.set_index('datetime').sort_index()
 
     sample_env = make_env(df[-500:], initial_capital=config.INITIAL_CAPITAL)
     state_dim = sample_env.observation_space.shape[0]
     action_dim = sample_env.action_space.n
 
-    log.info(f'State dim: {state_dim}, Action dim: {action_dim}, LSTM hidden: 128')
+    log.info(f'{symbol}: state_dim={state_dim}, action_dim={action_dim}')
 
-    _clean_incompatible_checkpoints(state_dim)
+    _clean_incompatible_checkpoints(state_dim, sym_lower)
 
     ppo = PPOAgent(state_dim=state_dim, action_dim=action_dim, lstm_hidden=128,
                    lr=3e-4, entropy_coef=0.01, dropout=0.2, device='cpu')
@@ -148,25 +140,31 @@ def main():
     regime_clf = create_regime_classifier(n_states=6, max_states=8)
 
     for name, agent in [('ppo', ppo), ('sac', sac)]:
-        ckpts = sorted(glob.glob(f'checkpoints/agent_{name}_*.pt'), key=os.path.getmtime)
+        ckpts = sorted(glob.glob(f'checkpoints/{sym_lower}/agent_{name}_*.pt'), key=os.path.getmtime)
+        if not ckpts:
+            ckpts = sorted(glob.glob(f'checkpoints/agent_{name}_{sym_lower}_*.pt'), key=os.path.getmtime)
         if ckpts:
             agent.load_checkpoint(ckpts[-1], strict=False)
-            log.info(f'Loaded {name} checkpoint: {os.path.basename(ckpts[-1])}')
+            log.info(f'{symbol}: loaded {name}: {os.path.basename(ckpts[-1])}')
         else:
-            log.warning(f'No {name} checkpoint found — starting fresh')
+            log.warning(f'{symbol}: no {name} checkpoint — starting fresh')
 
-    regime_clf.load()
+    regime_clf.load(path=f'checkpoints/{sym_lower}/regime')
 
     ensemble = EnsembleVoting(min_sharpe_threshold=0.2, boost_sharpe_threshold=1.0)
 
-    trade_db = create_trade_database(state_dim=state_dim)
+    os.makedirs(f'checkpoints/{sym_lower}', exist_ok=True)
+    trade_db = create_trade_database(
+        db_path=f'checkpoints/{sym_lower}/metrics.db',
+        experiences_path=f'checkpoints/{sym_lower}/experiences.npy',
+        state_dim=state_dim,
+    )
 
     if connected:
         env_factory = create_env_factory(bitget)
     else:
-        def env_factory(df=None):
-            return make_env(df if df is not None else df_local, initial_capital=config.INITIAL_CAPITAL)
-        df_local = df
+        def env_factory(df_local=df, _df=df):
+            return make_env(df_local, initial_capital=config.INITIAL_CAPITAL)
 
     healing = create_self_healing_daemon(
         ppo_agent=ppo, sac_agent=sac, regime_classifier=regime_clf,
@@ -175,34 +173,75 @@ def main():
 
     meta = MetaOptimizerAgent(
         ppo_agent=ppo, sac_agent=sac, env_factory=env_factory,
+        db_path=f'checkpoints/{sym_lower}/agent_evolution.db',
     )
 
     loop = create_continual_learning_loop(
         ppo_agent=ppo, sac_agent=sac, regime_classifier=regime_clf,
         ensemble=ensemble, env_factory=env_factory, bitget_client=bitget,
         self_healing_daemon=healing, meta_optimizer=meta, trade_db=trade_db,
+        symbol=symbol,
     )
 
+    return {
+        'symbol': symbol, 'bitget': bitget, 'ppo': ppo, 'sac': sac,
+        'regime_clf': regime_clf, 'ensemble': ensemble, 'trade_db': trade_db,
+        'env_factory': env_factory, 'healing': healing, 'meta': meta, 'loop': loop,
+    }
+
+
+def main():
+    symbols = config.SYMBOLS
+    log.info('═' * 60)
+    log.info('  INTERSECT — Autonomous AI Trading System')
+    log.info(f'  Symbols: {", ".join(symbols)} | Bitget USDT-Futures | {config.TIMEFRAME}')
+    log.info(f'  Demo: {config.DEMO} | Initial Capital: ${config.INITIAL_CAPITAL}')
+    log.info('═' * 60)
+
+    test_client = create_bitget_client(
+        api_key=config.API_KEY, api_secret=config.API_SECRET,
+        passphrase=config.PASSPHRASE, base_url=config.BASE_URL,
+        demo=config.DEMO, symbol=symbols[0],
+        product_type=config.PRODUCT_TYPE, margin_coin=config.MARGIN_COIN,
+        margin_mode=config.MARGIN_MODE,
+    )
+    connected = test_client.test_connection()
+
+    shared_df = None
     if connected:
-        loop.start()
-        healing.start()
-        log.info('Bot agents started.')
+        candles = test_client.get_candles(limit=1000)
+        if candles:
+            shared_df = _candles_to_df(candles)
     else:
-        log.warning('Bot agents not started (no Bitget connection). Dashboard only.')
+        log.warning('Bitget not connected — using synthetic data.')
+
+    stacks = {}
+    for sym in symbols:
+        stacks[sym] = _create_symbol_stack(sym, connected, shared_df)
+
+    for sym, s in stacks.items():
+        if connected:
+            s['loop'].start()
+            s['healing'].start()
+            log.info(f'{sym}: bot started')
+        else:
+            log.warning(f'{sym}: bot not started (no connection)')
 
     log.info('Launching web dashboard on port 8080...')
 
     from app import create_app
-    app = create_app(loop, trade_db, meta, ppo, sac, regime_clf, config)
+    app = create_app(stacks, config)
 
     def shutdown(sig, frame):
         log.info('Shutdown signal received')
-        loop.stop()
-        healing.stop()
-        trade_db.flush()
-        ppo.save_checkpoint(f'checkpoints/agent_ppo_final_{int(time.time())}.pt')
-        sac.save_checkpoint(f'checkpoints/agent_sac_final_{int(time.time())}.pt')
-        regime_clf.save()
+        for sym, s in stacks.items():
+            s['loop'].stop()
+            s['healing'].stop()
+            s['trade_db'].flush()
+            s['ppo'].save_checkpoint(f'checkpoints/{sym.lower()}/agent_ppo_final_{int(time.time())}.pt')
+            s['sac'].save_checkpoint(f'checkpoints/{sym.lower()}/agent_sac_final_{int(time.time())}.pt')
+            s['regime_clf'].save(path=f'checkpoints/{sym.lower()}/regime')
+            log.info(f'{sym}: saved')
         log.info('Shutdown complete')
         sys.exit(0)
 
