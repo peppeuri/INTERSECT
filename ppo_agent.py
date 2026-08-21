@@ -205,8 +205,10 @@ class PPOAgent:
             for i in range(n):
                 if i > 0 and batch[i - 1]['done']:
                     h, c = None, None
-                _, v, (h, c) = self.policy_net(states[i].unsqueeze(0), (h, c))
-                _, nv, _ = self.policy_net(next_states[i].unsqueeze(0), (h, c))
+                hidden = (h, c) if h is not None else None
+                _, v, (h, c) = self.policy_net(states[i].unsqueeze(0), hidden)
+                hidden = (h, c) if h is not None else None
+                _, nv, _ = self.policy_net(next_states[i].unsqueeze(0), hidden)
                 values.append(v)
                 next_vals.append(nv)
             values = torch.cat(values).squeeze()
@@ -291,7 +293,7 @@ class PPOAgent:
             self._log(f'Checkpoint not found: {path}')
             return
         try:
-            checkpoint = torch.load(path, map_location=self.device)
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
             if strict:
                 self.policy_net.load_state_dict(checkpoint['policy_net'])
             else:

@@ -62,7 +62,8 @@ class EnsembleVoting:
             total_w += w
 
         weighted = weighted / total_w if total_w > 0 else np.ones(7) / 7
-        final_action = int(np.argmax(weighted))
+        final_action = (int(np.random.choice(len(weighted), p=weighted / weighted.sum()))
+                        if exploration_mode else int(np.argmax(weighted)))
 
         info = {
             'action': 'trade', 'final_action': final_action,

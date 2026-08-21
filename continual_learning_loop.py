@@ -131,56 +131,73 @@ class ContinualLearningLoop:
                 time.sleep(max(0, self.loop_interval - elapsed))
 
             except Exception as e:
+                import traceback
                 self._log(f'Loop error: {e}')
+                for line in traceback.format_exc().splitlines()[-15:]:
+                    self._log(line)
                 time.sleep(60)
 
     def _process_bar(self):
-        candles = self.client.get_candles(limit=100)
-        if not candles:
-            return
+        try:
+            candles = self.client.get_candles(limit=100)
+            if not candles:
+                return
 
-        df = self._candles_to_df(candles)
-        price = candles[-1]['c']
-        regime, rprobs = self.regime.get_current_regime(df)
+            df = self._candles_to_df(candles)
+            price = candles[-1]['c']
+            regime, rprobs = self.regime.get_current_regime(df)
 
-        env = self.env_factory(df=df.tail(500))
-        env.set_regime_probs(rprobs[-min(len(rprobs), 500):])
-        obs = env._get_obs()
+            env = self.env_factory(df=df.tail(500))
+            env.set_regime_probs(rprobs[-min(len(rprobs), 500):])
+            obs = env._get_obs()
 
-        current_balance = self.client.get_balance()
+            current_balance = self.client.get_balance()
 
-        if self._prev_obs is not None:
-            reward = (current_balance - self._prev_balance) / self._prev_balance if self._prev_balance > 0 else 0.0
-            self.ppo.store_transition(self._prev_obs, self._prev_action, reward, obs, False, self._prev_log_prob, self._prev_value)
+            if self._prev_obs is not None:
+                reward = (current_balance - self._prev_balance) / self._prev_balance if self._prev_balance > 0 else 0.0
+                self.ppo.store_transition(self._prev_obs, self._prev_action, reward, obs, False, self._prev_log_prob, self._prev_value)
 
-        pa, pp, pv, plogp = self.ppo.predict(obs)
-        sa, sp, sv = self.sac.predict(obs)
+            pa, pp, pv, plogp = self.ppo.predict(obs)
+            sa, sp, sv = self.sac.predict(obs)
 
-        action, probs, conf, info = self.ensemble.vote({'ppo': (pa, pp, pv), 'sac': (sa, sp, sv)}, exploration_mode=self.ppo.exploration_mode or getattr(self.sac, 'exploration_mode', False))
+            self.ensemble.update_weights({
+                'ppo': self.ppo.get_metrics(),
+                'sac': self.sac.get_metrics(),
+            })
+            action, probs, conf, info = self.ensemble.vote({'ppo': (pa, pp, pv), 'sac': (sa, sp, sv)}, exploration_mode=self.ppo.exploration_mode or getattr(self.sac, 'exploration_mode', False))
 
-        action_label = {0: 'hold', 1: 'buy_1x', 2: 'buy_2x', 3: 'buy_3x', 4: 'sell_1x', 5: 'sell_2x', 6: 'sell_3x'}.get(action, '?')
-        probs_str = ', '.join(f'{p:.2f}' for p in probs)
-        best_sharpe = max(self.ensemble.agent_sharpes.values()) if self.ensemble.agent_sharpes else 0
-        self._log(f'Ensemble: action={action}({action_label}) conf={conf:.2f} best_sharpe={best_sharpe:.4f} probs=[{probs_str}]')
+            action_label = {0: 'hold', 1: 'buy_1x', 2: 'buy_2x', 3: 'buy_3x', 4: 'sell_1x', 5: 'sell_2x', 6: 'sell_3x'}.get(action, '?')
+            probs_str = ', '.join(f'{p:.2f}' for p in probs)
+            best_sharpe = max(self.ensemble.agent_sharpes.values()) if self.ensemble.agent_sharpes else 0
+            self._log(f'Ensemble: action={action}({action_label}) conf={conf:.2f} best_sharpe={best_sharpe:.4f} probs=[{probs_str}]')
 
-        sf = info.get('size_factor', 1.0)
-        if action not in (0, None) and info.get('action') != 'no_trade':
-            self._execute(action, price, sf, df, regime, info)
+            sf = info.get('size_factor', 1.0)
+            if action not in (0, None) and info.get('action') != 'no_trade':
+                pos = self.client.get_position()
+                if pos:
+                    self._log(f'Position already open ({pos.get("holdSide")} {pos.get("total")}), skipping new open')
+                else:
+                    self._execute(action, price, sf, df, regime, info)
 
-        self.ppo.update_rolling_metrics(current_balance)
-        self.sac.update_rolling_metrics(current_balance)
-        self.equity = current_balance
-        self._prev_obs = obs.copy()
-        self._prev_action = pa
-        self._prev_log_prob = plogp
-        self._prev_value = pv
-        self._prev_balance = current_balance
+            self.ppo.update_rolling_metrics(current_balance)
+            self.sac.update_rolling_metrics(current_balance)
+            self.equity = current_balance
+            self._prev_obs = obs.copy()
+            self._prev_action = pa
+            self._prev_log_prob = plogp
+            self._prev_value = pv
+            self._prev_balance = current_balance
+        except Exception as e:
+            import traceback
+            self._log(f'Bar error (trade skipped): {e}')
+            for line in traceback.format_exc().splitlines():
+                self._log(line)
 
     def _execute(self, action, price, sf, df, regime, info):
         side_map = {
             0: ('close', 'close', 0),
-            1: ('buy', 'open', 1), 2: ('buy', 'open', 2), 3: ('buy', 'open', 3),
-            4: ('sell', 'open', 1), 5: ('sell', 'open', 2), 6: ('sell', 'open', 3),
+            1: ('buy', 'open', 10), 2: ('buy', 'open', 10), 3: ('buy', 'open', 10),
+            4: ('sell', 'open', 10), 5: ('sell', 'open', 10), 6: ('sell', 'open', 10),
         }
         if action not in side_map:
             return
@@ -229,7 +246,7 @@ class ContinualLearningLoop:
 
     def _full_retrain(self):
         self._log('Full retrain on historical data...')
-        candles = self.client.get_candles(limit=20000)
+        candles = self.client.get_candles(limit=1000)
         if not candles:
             return
         df = self._candles_to_df(candles)

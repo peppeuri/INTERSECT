@@ -7,6 +7,7 @@ main.py: Entry point — starts trading bot threads + FastAPI web server
 import os
 import sys
 import time
+import glob
 import signal
 import logging
 import threading
@@ -61,7 +62,7 @@ def _clean_incompatible_checkpoints(current_state_dim: int):
     count = 0
     for ckpt in glob.glob('checkpoints/agent_ppo_*.pt'):
         try:
-            data = torch.load(ckpt, map_location='cpu')
+            data = torch.load(ckpt, map_location='cpu', weights_only=False)
             arch = data.get('architecture', {})
             ckpt_state_dim = arch.get('state_dim')
             if ckpt_state_dim is not None and ckpt_state_dim != current_state_dim:
@@ -76,7 +77,7 @@ def _clean_incompatible_checkpoints(current_state_dim: int):
 
     for ckpt in glob.glob('checkpoints/agent_sac_*.pt'):
         try:
-            data = torch.load(ckpt, map_location='cpu')
+            data = torch.load(ckpt, map_location='cpu', weights_only=False)
             arch = data.get('architecture', {})
             ckpt_state_dim = arch.get('state_dim')
             if ckpt_state_dim is not None and ckpt_state_dim != current_state_dim:
@@ -145,6 +146,16 @@ def main():
     sac = SACAgent(state_dim=state_dim, action_dim=action_dim, hidden_dim=256, device='cpu')
 
     regime_clf = create_regime_classifier(n_states=6, max_states=8)
+
+    for name, agent in [('ppo', ppo), ('sac', sac)]:
+        ckpts = sorted(glob.glob(f'checkpoints/agent_{name}_*.pt'), key=os.path.getmtime)
+        if ckpts:
+            agent.load_checkpoint(ckpts[-1], strict=False)
+            log.info(f'Loaded {name} checkpoint: {os.path.basename(ckpts[-1])}')
+        else:
+            log.warning(f'No {name} checkpoint found — starting fresh')
+
+    regime_clf.load()
 
     ensemble = EnsembleVoting(min_sharpe_threshold=0.2, boost_sharpe_threshold=1.0)
 

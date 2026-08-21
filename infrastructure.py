@@ -102,6 +102,7 @@ class BitgetClient:
         return {'code': '-1', 'msg': 'Max retries'}
 
     def get_candles(self, limit: int = 100, granularity: str = '15m') -> List[Dict]:
+        limit = min(limit, 1000)
         resp = self.get('/api/v2/mix/market/candles', {
             'symbol': self.symbol, 'productType': self.product_type,
             'granularity': granularity, 'limit': str(limit),
@@ -170,17 +171,33 @@ class BitgetClient:
         }
         return self.post('/api/v2/mix/order/place-order', body)
 
+    def cancel_all_plan_orders(self):
+        for plan_type in ('loss_plan', 'profit_plan'):
+            resp = self.post('/api/v2/mix/order/cancel-plan-order', {
+                'symbol': self.symbol, 'productType': self.product_type,
+                'marginCoin': self.margin_coin, 'planType': plan_type,
+            })
+            if resp.get('code') == '00000':
+                log.info(f'Cancelled existing {plan_type} plan orders')
+            elif 'empty' not in resp.get('msg', '').lower() and 'no' not in resp.get('msg', '').lower():
+                log.warning(f'Cancel {plan_type} plans: {resp}')
+
     def place_sl_tp(self, hold_side: str, sl_price: float, tp_price: float) -> bool:
         pos = None
-        for attempt in range(10):
+        for attempt in range(15):
             pos = self.get_position()
             if pos:
                 break
-            time.sleep(1)
+            time.sleep(2)
 
         if not pos:
-            log.error('Position not found after 10s. SL/TP NOT placed.')
+            log.error('Position not found after 30s. SL/TP NOT placed.')
             return False
+
+        time.sleep(3)
+
+        self.cancel_all_plan_orders()
+        time.sleep(1)
 
         size = str(pos.get('total', '0'))
         all_ok = True
@@ -200,8 +217,8 @@ class BitgetClient:
                     log.info(f'SL/TP placed: {plan_type} @ {trigger:.2f}')
                     placed = True
                     break
-                elif resp.get('code') == '43023' and attempt < 4:
-                    time.sleep(2)
+                elif resp.get('code') in ('43023', '40890') and attempt < 4:
+                    time.sleep(3)
                 else:
                     log.error(f'SL/TP ({plan_type}) FAILED: {resp}')
                     break

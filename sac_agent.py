@@ -204,11 +204,11 @@ class SACAgent:
             'rolling_sharpe': list(self.rolling_sharpe),
         }, path)
 
-    def load_checkpoint(self, path: str):
-        checkpoint = torch.load(path, map_location=self.device)
-        self.actor.load_state_dict(checkpoint['actor'])
-        self.critic.load_state_dict(checkpoint['critic'])
-        self.critic_target.load_state_dict(checkpoint['critic_target'])
+    def load_checkpoint(self, path: str, strict: bool = True):
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        self.actor.load_state_dict(checkpoint['actor'], strict=strict)
+        self.critic.load_state_dict(checkpoint['critic'], strict=strict)
+        self.critic_target.load_state_dict(checkpoint['critic_target'], strict=strict)
         self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer'])
         self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer'])
         self.log_alpha = checkpoint['log_alpha']
