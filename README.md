@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.jpg" alt="INTERSECT" width="320"></p>
+
 INTERSECT - Autonomous AI Cryptocurrency Trading System
 ========================================================
 
